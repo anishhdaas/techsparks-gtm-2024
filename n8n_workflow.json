@@ -1,0 +1,360 @@
+{
+  "name": "TechSparks 2024 GTM Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      },
+      "name": "Daily Trigger (9am Weekdays)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "readSheet",
+        "documentId": "YOUR_GOOGLE_SHEET_ID",
+        "sheetName": "Raw",
+        "options": {
+          "headerRow": true
+        }
+      },
+      "name": "Read Raw Contacts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 50,
+        "options": {}
+      },
+      "name": "Limit to 50/day",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json['Enriched'] }}",
+              "operation": "isEmpty"
+            }
+          ]
+        }
+      },
+      "name": "Skip Already Enriched",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// ICP Scoring Logic\nconst item = $input.item.json;\n\nlet score = 0;\n\n// Outreach Priority (already in enriched CSV)\nconst priority = (item['Outreach_Priority'] || '').trim();\nif (priority === 'High') score += 40;\nelse if (priority === 'Medium') score += 25;\nelse score += 10;\n\n// Category signals\nconst cat = (item['Category'] || '').toLowerCase();\nif (cat.includes('founder')) score += 20;\nif (cat.includes('investor')) score += 18;\nif (cat.includes('speaker')) score += 12;\nif (cat.includes('featured')) score += 8;\n\n// Funding stage\nconst fs = (item['Funding_Stage'] || '').trim();\nconst fundingPts = {\n  'Listed': 15, 'Pre-IPO': 14, 'IPO 2024': 14, 'IPO 2025': 14,\n  'Series F': 14, 'Series G': 14, 'Series H': 14, 'Series D+': 13,\n  'Series D': 12, 'Series E': 12, 'Series B': 10, 'Series C': 10,\n  'Series A': 7, 'Seed': 6, 'Pre-Seed': 5\n};\nscore += fundingPts[fs] || (fs.startsWith('Fund') ? 13 : 5);\n\n// Email confidence\nconst conf = (item['Email_Confidence'] || '').trim();\nif (conf === 'High') score += 8;\nelse if (conf === 'Medium') score += 4;\n\n// Has hook\nif ((item['Personalization_Hook'] || '').trim()) score += 5;\n\nscore = Math.min(100, score);\n\nconst tier = score >= 80 ? 'A' : score >= 55 ? 'B' : 'C';\nconst route = tier === 'A' ? 'AE + Senior Exec' : tier === 'B' ? 'SDR Sequence' : 'Nurture Drip';\n\nreturn [{\n  json: {\n    ...item,\n    icp_score: score,\n    tier,\n    route\n  }\n}];"
+      },
+      "name": "ICP Score & Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "PASTE_YOUR_CLAUDE_API_KEY_HERE"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-sonnet-4-20250514\",\n  \"max_tokens\": 600,\n  \"messages\": [{\n    \"role\": \"user\",\n    \"content\": \"Generate 3 outreach messages for TechSparks 2024 contact.\\nName: {{ $json['Full Name'] }}\\nTitle: {{ $json['Title'] }}\\nCompany: {{ $json['Company'] }}\\nSector: {{ $json['Sector'] }}\\nContext: {{ $json['Personalization_Hook'] }}\\nPersona: {{ $json['GTM_Persona'] }}\\n\\nGenerate exactly 3 messages separated by ---\\n\\nMESSAGE 1 (Pre-event LinkedIn, max 3 sentences, end with: Once you find this relevant, I can introduce you to a YC-backed company specializing in solving this.)\\n\\nMESSAGE 2 (During-event opener, 2 sentences + 1 question, peer tone)\\n\\nMESSAGE 3 (Post-event email: line 1 = Subject: [...], blank line, 3-4 sentence body, close with YC intro offer, sign: Warm regards [Your Name])\"\n  }]\n}"
+      },
+      "name": "Claude AI \u2014 Generate Messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        1340,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Claude's 3-message response\nconst item = $input.item.json;\n\nlet fullText = '';\ntry {\n  const body = JSON.parse(item.body || '{}');\n  fullText = (body.content || []).map(c => c.text || '').join('\\n');\n} catch(e) {\n  fullText = item.body || '';\n}\n\nconst parts = fullText.split('---').map(p => p.trim()).filter(Boolean);\n\nreturn [{\n  json: {\n    ...item,\n    msg_pre_event: parts[0] || '',\n    msg_during_event: parts[1] || '',\n    msg_post_event: parts[2] || '',\n    enriched_at: new Date().toISOString(),\n    Enriched: 'YES'\n  }\n}];"
+      },
+      "name": "Parse Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": "YOUR_GOOGLE_SHEET_ID",
+        "sheetName": "Enriched",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Full Name": "={{ $json['Full Name'] }}",
+            "Email": "={{ $json['Email_Verified'] }}",
+            "Company": "={{ $json['Company'] }}",
+            "Title": "={{ $json['Title'] }}",
+            "Sector": "={{ $json['Sector'] }}",
+            "ICP Score": "={{ $json['icp_score'] }}",
+            "Tier": "={{ $json['tier'] }}",
+            "Route": "={{ $json['route'] }}",
+            "Hook": "={{ $json['Personalization_Hook'] }}",
+            "Pre-Event LinkedIn": "={{ $json['msg_pre_event'] }}",
+            "During Event": "={{ $json['msg_during_event'] }}",
+            "Post-Event Email": "={{ $json['msg_post_event'] }}",
+            "Enriched At": "={{ $json['enriched_at'] }}"
+          }
+        }
+      },
+      "name": "Write to Enriched Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        260
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": "YOUR_GOOGLE_SHEET_ID",
+        "sheetName": "Raw",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "No": "={{ $json['No'] }}",
+            "Enriched": "=YES"
+          }
+        }
+      },
+      "name": "Mark Raw Row Done",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        260
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json['tier'] }}",
+              "value2": "A",
+              "operation": "equals"
+            }
+          ]
+        }
+      },
+      "name": "Tier A?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "webhookUri": "YOUR_SLACK_WEBHOOK_URL",
+        "text": "=\ud83d\udea8 *New Tier A Contact Enriched*\n\n*Name:* {{ $json['Full Name'] }}\n*Title:* {{ $json['Title'] }} @ {{ $json['Company'] }}\n*Sector:* {{ $json['Sector'] }}\n*ICP Score:* {{ $json['icp_score'] }}\n*Hook:* {{ $json['Personalization_Hook'] }}\n*Email:* {{ $json['Email_Verified'] }}\n*LinkedIn:* https://{{ $json['LinkedIn_Profile'] }}\n\n*Pre-Event Message:*\n{{ $json['msg_pre_event'] }}\n\n\u2192 Route: AE + Senior Exec outreach within 24hrs"
+      },
+      "name": "Slack Alert \u2014 Tier A",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [
+        2220,
+        380
+      ],
+      "credentials": {
+        "slackApi": {
+          "name": "Slack Account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily Trigger (9am Weekdays)": {
+      "main": [
+        [
+          {
+            "node": "Read Raw Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Raw Contacts": {
+      "main": [
+        [
+          {
+            "node": "Limit to 50/day",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limit to 50/day": {
+      "main": [
+        [
+          {
+            "node": "Skip Already Enriched",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Already Enriched": {
+      "main": [
+        [
+          {
+            "node": "ICP Score & Route",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "ICP Score & Route": {
+      "main": [
+        [
+          {
+            "node": "Claude AI \u2014 Generate Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude AI \u2014 Generate Messages": {
+      "main": [
+        [
+          {
+            "node": "Parse Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Messages": {
+      "main": [
+        [
+          {
+            "node": "Write to Enriched Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Tier A?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write to Enriched Sheet": {
+      "main": [
+        [
+          {
+            "node": "Mark Raw Row Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tier A?": {
+      "main": [
+        [
+          {
+            "node": "Slack Alert \u2014 Tier A",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    "gtm",
+    "techsparks",
+    "outreach"
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
