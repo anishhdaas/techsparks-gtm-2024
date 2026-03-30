@@ -1,5 +1,34 @@
 # 🚀 TechSparks 2024 GTM Automation Engine
 
+## 📌 Overview
+Data-driven GTM strategy targeting founders, investors, and decision-makers.
+
+## 🎯 Problem
+Generic outreach leads to low engagement.
+
+## 🧠 Solution
+- ICP targeting
+- Data enrichment
+- Automated workflows
+
+## ⚙️ Tools
+- Google Sheets
+- n8n
+- GitHub
+
+## 📊 Impact
+- 150+ profiles targeted
+- Scalable outreach system
+
+## 📁 Structure
+data/
+docs/
+automation/
+
+## 🚀 Author
+Anish Das
+# 🚀 TechSparks 2024 GTM Automation Engine
+
 ## 📌 Project Overview
 
 This project demonstrates a data-driven Go-To-Market (GTM) strategy for TechSparks 2024, focused on targeting high-value founders, investors, and decision-makers.
